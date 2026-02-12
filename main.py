@@ -1,59 +1,64 @@
 import os
 import asyncio
-from aiogram import Bot, Dispatcher, types, F
+import logging
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from huggingface_hub import AsyncInferenceClient
 
-# Берем ключи из настроек сервера (Environment Variables)
+# Настройка логов, чтобы видеть ошибки в панели Koyeb
+logging.basicConfig(level=logging.INFO)
+
 TOKEN = os.getenv("BOT_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
-# Используем Qwen 2.5 Coder через API
 MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+# Тайм-аут побольше, если модель долго просыпается
 client = AsyncInferenceClient(model=MODEL_ID, token=HF_TOKEN)
 
-# Список чатов, где бот активен
 active_chats = set()
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("Я твой ИИ-двойник. Команды:\n/on — включить меня тут\n/off — выключить")
+    await message.answer("🤖 Бот запущен! Используй /on чтобы я начал отвечать.")
 
 @dp.message(Command("on"))
 async def on(message: types.Message):
     active_chats.add(message.chat.id)
-    await message.answer("✅ Бот активен. Теперь я буду отвечать за тебя в этом чате.")
-
-@dp.message(Command("off"))
-async def off(message: types.Message):
-    active_chats.discard(message.chat.id)
-    await message.answer("❌ Бот выключен.")
+    await message.answer("✅ Я включился!")
 
 @dp.message()
 async def auto_reply(message: types.Message):
-    # Отвечаем, только если бот включен и это не сообщение от другого бота
     if message.chat.id not in active_chats or message.from_user.is_bot:
         return
 
-    # Эффект "печатает..."
-    await bot.send_chat_action(message.chat.id, "typing")
+    if not message.text:
+        return
 
-    prompt = f"Ты — умный помощник и программист. Ответь на сообщение пользователя: {message.text}"
+    await bot.send_chat_action(message.chat.id, "typing")
     
     try:
-        # Запрос к ИИ (бесплатно)
-        response = await client.text_generation(
-            prompt, 
-            max_new_tokens=500,
-            temperature=0.7
-        )
-        await message.reply(response)
+        # Пытаемся получить ответ
+        response = ""
+        async for token in client.chat_completion(
+            messages=[{"role": "user", "content": message.text}],
+            max_tokens=500,
+            stream=True
+        ):
+            response += token.choices[0].delta.content or ""
+        
+        if response:
+            await message.reply(response)
+        else:
+            await message.reply("ИИ вернул пустой ответ. Попробуй еще раз.")
+            
     except Exception as e:
-        print(f"Error: {e}")
+        logging.error(f"ОШИБКА ИИ: {e}")
+        await message.reply(f"❌ Ошибка нейросети: {str(e)[:100]}")
 
 async def main():
+    logging.info("Бот начинает опрос Telegram...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
